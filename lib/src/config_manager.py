@@ -60,6 +60,9 @@ class ConfigManager:
             'websocket_provider': None,        # Provider identifier for credential lookup (e.g., 'openai')
             'websocket_model': None,           # Model identifier (e.g., 'gpt-realtime-mini-2025-12-15')
             'websocket_url': None,             # Optional: explicit WebSocket URL (auto-derived if None)
+            'websocket_turn_detection_threshold': 0.5,           # VAD sensitivity (0.0-1.0, lower = more sensitive)
+            'websocket_turn_detection_prefix_padding_ms': 300,  # Audio to include before detected speech
+            'websocket_turn_detection_silence_duration_ms': 500,  # Silence duration to trigger transcription
             'realtime_timeout': 30,            # Completion timeout (seconds)
             'realtime_buffer_max_seconds': 5,  # Max buffer before dropping chunks
             'realtime_mode': 'transcribe',      # 'transcribe' (speech-to-text) or 'converse' (voice-to-AI)

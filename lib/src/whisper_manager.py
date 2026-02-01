@@ -214,7 +214,14 @@ class WhisperManager:
                 # Set buffer max seconds
                 buffer_max = self.config.get_setting('realtime_buffer_max_seconds', 5)
                 self._realtime_client.set_max_buffer_seconds(buffer_max)
-                
+
+                # Set VAD turn detection config
+                self._realtime_client.set_vad_config(
+                    threshold=self.config.get_setting('websocket_turn_detection_threshold', 0.5),
+                    prefix_padding_ms=self.config.get_setting('websocket_turn_detection_prefix_padding_ms', 300),
+                    silence_duration_ms=self.config.get_setting('websocket_turn_detection_silence_duration_ms', 500)
+                )
+
                 # Connect
                 if not self._realtime_client.connect(websocket_url, api_key, model_id, instructions):
                     print('ERROR: Failed to connect to Realtime WebSocket')

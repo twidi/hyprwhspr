@@ -76,6 +76,11 @@ class RealtimeClient:
         # Track if buffer was committed (by VAD or manual)
         # Prevents double-commit error when VAD auto-commits on speech end
         self._buffer_committed = False
+
+        # VAD turn detection configuration (defaults)
+        self.vad_threshold = 0.5
+        self.vad_prefix_padding_ms = 300
+        self.vad_silence_duration_ms = 500
         
     def connect(self, url: str, api_key: str, model: str, instructions: Optional[str] = None) -> bool:
         """
@@ -295,9 +300,9 @@ class RealtimeClient:
                         'transcription': transcription_config,
                         'turn_detection': {
                             'type': 'server_vad',
-                            'threshold': 0.5,
-                            'prefix_padding_ms': 300,
-                            'silence_duration_ms': 500
+                            'threshold': self.vad_threshold,
+                            'prefix_padding_ms': self.vad_prefix_padding_ms,
+                            'silence_duration_ms': self.vad_silence_duration_ms
                         }
                     }
                 }
@@ -531,4 +536,16 @@ class RealtimeClient:
     def set_max_buffer_seconds(self, seconds: float):
         """Set maximum buffer size in seconds for backpressure handling"""
         self.max_buffer_seconds = max(1.0, seconds)  # Minimum 1 second
+
+    def set_vad_config(self, threshold: float = 0.5, prefix_padding_ms: int = 300, silence_duration_ms: int = 500):
+        """Configure VAD turn detection parameters.
+
+        Args:
+            threshold: Voice detection sensitivity (0.0-1.0, lower = more sensitive)
+            prefix_padding_ms: Audio to include before detected speech starts
+            silence_duration_ms: Silence duration to trigger a transcription segment
+        """
+        self.vad_threshold = threshold
+        self.vad_prefix_padding_ms = prefix_padding_ms
+        self.vad_silence_duration_ms = silence_duration_ms
 
