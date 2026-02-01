@@ -237,13 +237,19 @@ class RealtimeClient:
             print(f'[REALTIME] Response done', flush=True)
         
         # Transcription events (fallback/alternative)
+        # VAD can send multiple transcription events when it detects silences
+        # We accumulate them to get the complete transcription
         elif event_type == 'conversation.item.input_audio_transcription.completed':
-            transcript = event.get('transcript', '')
+            transcript = event.get('transcript', '').strip()
             with self.lock:
-                self.current_response_text = transcript
+                if transcript:
+                    if self.current_response_text:
+                        self.current_response_text += ' ' + transcript
+                    else:
+                        self.current_response_text = transcript
                 self.response_complete = True
             self.response_event.set()
-            print(f'[REALTIME] Transcription completed ({len(transcript)} chars)', flush=True)
+            print(f'[REALTIME] Transcription segment received ({len(transcript)} chars)', flush=True)
         
         elif event_type == 'input_audio_buffer.committed':
             print(f'[REALTIME] Audio buffer committed', flush=True)
@@ -441,7 +447,8 @@ class RealtimeClient:
             # before the user manually stops recording
             # Use lock to safely check state set by receiver thread
             with self.lock:
-                if self.response_complete and self.current_response_text:
+                # Check if we already have accumulated transcription from VAD segments
+                if self.current_response_text:
                     result = self.current_response_text.strip()
                     # Reset state for next recording
                     self.current_response_text = ""
@@ -449,11 +456,10 @@ class RealtimeClient:
                     self.response_event.clear()
                     self.audio_buffer_seconds = 0.0
                     self._buffer_committed = False
-                    print(f'[REALTIME] Using VAD-triggered transcription ({len(result)} chars)', flush=True)
+                    print(f'[REALTIME] Using accumulated VAD transcription ({len(result)} chars)', flush=True)
                     return result
 
-                # Reset response state for manual commit flow
-                self.current_response_text = ""
+                # No transcription yet - prepare for manual commit flow
                 self.response_complete = False
                 self.response_event.clear()
 
