@@ -78,7 +78,57 @@ class MicOSDRunner:
         except (ImportError, ValueError):
             return f"gtk4-layer-shell not installed. Install: {layer_pkg}"
         return ""
-    
+
+    @staticmethod
+    def _find_gtk4_layer_shell_library():
+        """
+        Find the gtk4-layer-shell library path for LD_PRELOAD.
+
+        Uses ldconfig to dynamically find the library, with fallback to
+        common hardcoded paths if ldconfig fails.
+
+        Returns:
+            tuple: (path, method) where path is the library path (or None),
+                   and method is how it was found ('ldconfig', 'fallback', or None).
+        """
+        # First, try ldconfig -p to find the library dynamically
+        try:
+            result = subprocess.run(
+                ['/sbin/ldconfig', '-p'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if 'gtk4-layer-shell' in line and '=>' in line:
+                        lib_path = line.split('=>')[-1].strip()
+                        if lib_path and os.path.exists(lib_path):
+                            # Resolve symlink to actual file for reliable loading
+                            if os.path.islink(lib_path):
+                                lib_path = os.path.realpath(lib_path)
+                            return lib_path, 'ldconfig'
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass  # ldconfig not available or failed, fall back to hardcoded paths
+
+        # Fallback: search in common locations
+        lib_paths = [
+            '/usr/lib/x86_64-linux-gnu/libgtk4-layer-shell.so',  # Debian/Ubuntu
+            '/usr/lib/libgtk4-layer-shell.so',                    # Arch/Fedora
+            '/usr/lib64/libgtk4-layer-shell.so',                  # Some 64-bit distros
+        ]
+        for path in lib_paths:
+            # Check for exact path or versioned variant (e.g., .so.0)
+            for suffix in ['', '.0']:
+                full_path = path + suffix
+                if os.path.exists(full_path):
+                    # Resolve symlink to actual file for reliable loading
+                    if os.path.islink(full_path):
+                        full_path = os.path.realpath(full_path)
+                    return full_path, 'fallback'
+
+        return None, None
+
     def _ensure_daemon(self):
         """Ensure the daemon process is running."""
         # Check in-memory reference first
@@ -121,14 +171,15 @@ sys.exit(main())
 """
 
         # Set LD_PRELOAD for gtk4-layer-shell
-        # Use the actual .so file (not symlink) to ensure proper loading
+        # This is required for layer-shell to work properly on some compositors (e.g., KWin)
+        # The library must be preloaded before libwayland-client
         env = os.environ.copy()
-        # Try to find the actual library file
-        lib_path = '/usr/lib/libgtk4-layer-shell.so'
-        if os.path.islink(lib_path):
-            # Resolve symlink to actual file
-            lib_path = os.path.realpath(lib_path)
-        env['LD_PRELOAD'] = lib_path
+        lib_path, method = self._find_gtk4_layer_shell_library()
+        if lib_path:
+            env['LD_PRELOAD'] = lib_path
+            print(f"[MIC-OSD] Found gtk4-layer-shell via {method}: {lib_path}", flush=True)
+        else:
+            print("[MIC-OSD] Warning: gtk4-layer-shell library not found, overlay may not work correctly", flush=True)
 
         try:
             self._process = subprocess.Popen(
