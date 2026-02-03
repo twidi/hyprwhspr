@@ -7,6 +7,12 @@ from typing import Dict, List, Optional, Tuple
 
 
 # Provider registry with known cloud transcription providers
+#
+# Model flags:
+#   - rest: True (default if not specified) - available for REST API
+#   - realtime_transcribe: True - available for WebSocket transcription mode
+#   - realtime_converse: True - available for WebSocket conversation mode
+#
 PROVIDERS: Dict[str, Dict] = {
     'openai': {
         'name': 'OpenAI',
@@ -15,28 +21,48 @@ PROVIDERS: Dict[str, Dict] = {
         'api_key_prefix': 'sk-',
         'api_key_description': 'OpenAI API key (starts with sk-)',
         'models': {
+            # Transcription models - work with REST API and WebSocket transcription mode
             'gpt-4o-transcribe': {
                 'name': 'GPT-4o Transcribe',
                 'description': 'Latest model with best accuracy',
-                'body': {'model': 'gpt-4o-transcribe'}
+                'body': {'model': 'gpt-4o-transcribe'},
+                'realtime_transcribe': True
             },
             'gpt-4o-mini-transcribe': {
                 'name': 'GPT-4o Mini Transcribe',
                 'description': 'Faster, lighter model',
-                'body': {'model': 'gpt-4o-mini-transcribe'}
+                'body': {'model': 'gpt-4o-mini-transcribe'},
+                'realtime_transcribe': True
             },
             'gpt-4o-mini-transcribe-2025-12-15': {
                 'name': 'GPT-4o Mini Transcribe (2025-12-15)',
                 'description': 'Updated version of the faster, lighter transcription model',
-                'body': {'model': 'gpt-4o-mini-transcribe-2025-12-15'}
+                'body': {'model': 'gpt-4o-mini-transcribe-2025-12-15'},
+                'realtime_transcribe': True
+            },
+            # Realtime conversation models - only for WebSocket converse mode
+            'gpt-realtime': {
+                'name': 'GPT Realtime',
+                'description': 'General availability realtime model',
+                'body': {'model': 'gpt-realtime'},
+                'rest': False,
+                'realtime_converse': True
+            },
+            'gpt-realtime-mini': {
+                'name': 'GPT Realtime Mini',
+                'description': 'Cost-efficient realtime model',
+                'body': {'model': 'gpt-realtime-mini'},
+                'rest': False,
+                'realtime_converse': True
             },
             'gpt-realtime-mini-2025-12-15': {
                 'name': 'GPT Realtime Mini (2025-12-15)',
-                'description': 'Low-latency realtime streaming',
+                'description': 'Dated version of cost-efficient realtime model',
                 'body': {'model': 'gpt-realtime-mini-2025-12-15'},
-                'realtime_model': True,  # Only show for realtime-ws backend
-                'hidden': True  # Hide from REST API menu
+                'rest': False,
+                'realtime_converse': True
             },
+            # Other models - REST API only
             'gpt-audio-mini-2025-12-15': {
                 'name': 'GPT Audio Mini (2025-12-15)',
                 'description': 'General purpose audio model',

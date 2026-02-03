@@ -322,7 +322,7 @@ class RealtimeClient:
         if self.mode == 'transcribe':
             # Transcription-only session
             # Build transcription config - omit language for auto-detect
-            transcription_config = {'model': 'gpt-4o-mini-transcribe'}
+            transcription_config = {'model': self.model}
             if self.language:
                 transcription_config['language'] = self.language
 
