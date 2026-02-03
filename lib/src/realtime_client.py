@@ -504,6 +504,7 @@ class RealtimeClient:
 
             # Scenario 1: We have uncommitted audio that VAD didn't detect as speech
             # This MUST be checked before concluding "no speech detected"
+            # In converse mode (no VAD), this is the normal path
             time_since_last_audio = time.time() - self._last_audio_sent_time
             if time_since_last_audio < 1.0 and not buffer_committed and not has_text and not speech_pending and pending_transcriptions == 0:
                 # Audio was sent recently but VAD never triggered - force a commit to capture any speech
@@ -511,16 +512,32 @@ class RealtimeClient:
                 commit_event = {'type': 'input_audio_buffer.commit'}
                 self.ws.send(json.dumps(commit_event))
 
-                # Wait for the transcription
+                # For converse mode, request a response from the model
+                if self.mode == 'converse':
+                    response_event = {
+                        'type': 'response.create',
+                        'response': {
+                            'output_modalities': ['text']
+                        }
+                    }
+                    self.ws.send(json.dumps(response_event))
+
+                # Wait for the transcription (transcribe mode) or response (converse mode)
                 wait_start = time.time()
                 while True:
                     if self.response_event.wait(timeout=timeout):
                         with self.lock:
-                            if self._pending_transcriptions == 0:
-                                break
+                            # In converse mode, wait for response.done (response_complete)
+                            # In transcribe mode, wait for all pending transcriptions
+                            if self.mode == 'converse':
+                                if self.response_complete:
+                                    break
+                            else:
+                                if self._pending_transcriptions == 0:
+                                    break
                             self.response_event.clear()
                     else:
-                        print(f'[REALTIME] TIMEOUT waiting for forced commit transcription ({timeout}s)', flush=True)
+                        print(f'[REALTIME] TIMEOUT waiting for {"response" if self.mode == "converse" else "transcription"} ({timeout}s)', flush=True)
                         break
 
                 wait_duration = time.time() - wait_start
@@ -531,7 +548,7 @@ class RealtimeClient:
                     self._buffer_committed = False
                     self._pending_transcriptions = 0
                     self.audio_buffer_seconds = 0.0
-                print(f'[REALTIME] Got transcription after forced commit ({wait_duration:.2f}s)', flush=True)
+                print(f'[REALTIME] Got {"response" if self.mode == "converse" else "transcription"} after forced commit ({wait_duration:.2f}s)', flush=True)
                 return result
 
             # Scenario 2: No speech was ever detected AND no recent audio - nothing to transcribe
@@ -559,17 +576,22 @@ class RealtimeClient:
                     }
                     self.ws.send(json.dumps(response_event))
 
-                # Wait for all pending transcriptions
+                # Wait for the transcription (transcribe mode) or response (converse mode)
                 wait_start = time.time()
                 while True:
                     if self.response_event.wait(timeout=timeout):
                         with self.lock:
-                            if self._pending_transcriptions == 0:
-                                break
-                            # More pending, keep waiting
+                            # In converse mode, wait for response.done (response_complete)
+                            # In transcribe mode, wait for all pending transcriptions
+                            if self.mode == 'converse':
+                                if self.response_complete:
+                                    break
+                            else:
+                                if self._pending_transcriptions == 0:
+                                    break
                             self.response_event.clear()
                     else:
-                        print(f'[REALTIME] TIMEOUT waiting for transcription ({timeout}s)', flush=True)
+                        print(f'[REALTIME] TIMEOUT waiting for {"response" if self.mode == "converse" else "transcription"} ({timeout}s)', flush=True)
                         break
 
                 wait_duration = time.time() - wait_start
@@ -582,7 +604,7 @@ class RealtimeClient:
                     self._speech_in_progress = False
                     self._pending_transcriptions = 0
                     self.audio_buffer_seconds = 0.0
-                print(f'[REALTIME] Got transcription after {wait_duration:.2f}s', flush=True)
+                print(f'[REALTIME] Got {"response" if self.mode == "converse" else "transcription"} after {wait_duration:.2f}s', flush=True)
                 return result
 
             # Scenario 4: There are pending transcriptions (VAD committed but transcription not received yet)
@@ -611,7 +633,7 @@ class RealtimeClient:
                     self._buffer_committed = False
                     self._pending_transcriptions = 0
                     self.audio_buffer_seconds = 0.0
-                print(f'[REALTIME] Got transcription after {wait_duration:.2f}s', flush=True)
+                print(f'[REALTIME] Got {"response" if self.mode == "converse" else "transcription"} after {wait_duration:.2f}s', flush=True)
                 return result
 
             # Scenario 5: We have accumulated text and no pending transcriptions
