@@ -219,7 +219,7 @@ class RealtimeClient:
 
         # Log session events
         if event_type in ('session.created', 'session.updated'):
-            pass  # Session events are expected, no need to log
+            print(f'[REALTIME] Session event: {event_type}', flush=True)
         
         # Response events (conversational API)
         elif event_type == 'response.created':
@@ -263,36 +263,36 @@ class RealtimeClient:
                         self.current_response_text += ' ' + transcript
                     else:
                         self.current_response_text = transcript
-                # Mark that this speech segment has been transcribed
-                self._speech_in_progress = False
+                # Note: Do NOT reset _speech_in_progress here - a new speech segment
+                # may have started while this transcription was pending. Let speech_stopped
+                # handle that, or reset at the end of commit_and_get_text.
                 # Decrement pending transcriptions counter
                 if self._pending_transcriptions > 0:
                     self._pending_transcriptions -= 1
                 # Only mark complete if no more pending transcriptions
                 self.response_complete = (self._pending_transcriptions == 0)
-            print(f'[REALTIME] Transcription segment received ({len(transcript)} chars)', flush=True)
-            # Signal to update waiters
+            # Signal if no more pending (or always signal to update waiters)
             self.response_event.set()
+            print(f'[REALTIME] Transcription segment completed ({len(transcript)} chars) | pending={self._pending_transcriptions}', flush=True)
 
         elif event_type == 'conversation.item.input_audio_transcription.failed':
             # Transcription failed (e.g., audio unintelligible)
             error = event.get('error', {})
             error_message = error.get('message', 'Unknown transcription error')
-            print(f'[REALTIME] Transcription failed: {error_message}', flush=True)
             with self.lock:
-                # Mark that this speech segment is done (even though it failed)
-                self._speech_in_progress = False
+                # Note: Do NOT reset _speech_in_progress here - same reason as above
                 # Decrement pending transcriptions counter
                 if self._pending_transcriptions > 0:
                     self._pending_transcriptions -= 1
                 self.response_complete = (self._pending_transcriptions == 0)
             self.response_event.set()
+            print(f'[REALTIME] Transcription segment failed: {error_message} | pending={self._pending_transcriptions}', flush=True)
 
         elif event_type == 'input_audio_buffer.committed':
             with self.lock:
                 self._buffer_committed = True
                 self._pending_transcriptions += 1
-            print(f'[REALTIME] Audio buffer committed', flush=True)
+            print(f'[REALTIME] Audio buffer committed (pending transcription segments={self._pending_transcriptions})', flush=True)
 
         elif event_type == 'input_audio_buffer.speech_started':
             with self.lock:
@@ -303,9 +303,10 @@ class RealtimeClient:
             print(f'[REALTIME] Speech detected', flush=True)
 
         elif event_type == 'input_audio_buffer.speech_stopped':
-            # Note: speech_in_progress stays True until we receive transcription.completed
+            with self.lock:
+                self._speech_in_progress = False
             print(f'[REALTIME] Speech ended', flush=True)
-        
+
         elif event_type == 'error':
             error = event.get('error', {})
             error_message = error.get('message', 'Unknown error')
@@ -457,7 +458,7 @@ class RealtimeClient:
 
             # Track when audio was last sent
             self._last_audio_sent_time = time.time()
-
+            
             # Track buffer size for backpressure
             chunk_duration = len(audio_chunk) / self.sample_rate
             self.audio_buffer_seconds += chunk_duration
@@ -484,6 +485,7 @@ class RealtimeClient:
             Final transcript text, or empty string on timeout/error
         """
         if not self.connected or not self.ws:
+            print('[REALTIME] Not connected, cannot commit', flush=True)
             return ""
 
         try:
@@ -498,17 +500,54 @@ class RealtimeClient:
                 self.response_complete = False
                 self.response_event.clear()
 
-            # Scenario 1: No speech was ever detected - nothing to transcribe
+            print(f'[REALTIME] commit_and_get_text called | has_text={has_text}, speech_pending={speech_pending}, buffer_committed={buffer_committed}, pending_transcriptions={pending_transcriptions}', flush=True)
+
+            # Scenario 1: We have uncommitted audio that VAD didn't detect as speech
+            # This MUST be checked before concluding "no speech detected"
+            time_since_last_audio = time.time() - self._last_audio_sent_time
+            if time_since_last_audio < 1.0 and not buffer_committed and not has_text and not speech_pending and pending_transcriptions == 0:
+                # Audio was sent recently but VAD never triggered - force a commit to capture any speech
+                print(f'[REALTIME] Recent audio ({time_since_last_audio:.2f}s ago) but VAD never triggered (yet), forcing commit...', flush=True)
+                commit_event = {'type': 'input_audio_buffer.commit'}
+                self.ws.send(json.dumps(commit_event))
+
+                # Wait for the transcription
+                wait_start = time.time()
+                while True:
+                    if self.response_event.wait(timeout=timeout):
+                        with self.lock:
+                            if self._pending_transcriptions == 0:
+                                break
+                            self.response_event.clear()
+                    else:
+                        print(f'[REALTIME] TIMEOUT waiting for forced commit transcription ({timeout}s)', flush=True)
+                        break
+
+                wait_duration = time.time() - wait_start
+                with self.lock:
+                    result = self.current_response_text.strip()
+                    self.current_response_text = ""
+                    self.response_complete = False
+                    self._buffer_committed = False
+                    self._pending_transcriptions = 0
+                    self.audio_buffer_seconds = 0.0
+                print(f'[REALTIME] Got transcription after forced commit ({wait_duration:.2f}s)', flush=True)
+                return result
+
+            # Scenario 2: No speech was ever detected AND no recent audio - nothing to transcribe
             if not has_text and not speech_pending and pending_transcriptions == 0:
+                print(f'[REALTIME] No speech detected, nothing to transcribe', flush=True)
                 return ""
 
-            # Scenario 2: Speech is still in progress (user stopped before silence_duration)
+            # Scenario 3: Speech is still in progress (user stopped before silence_duration)
             # We need to commit and wait for the transcription
             if speech_pending:
-                print('[REALTIME] Speech in progress, committing buffer', flush=True)
                 if not buffer_committed:
+                    print(f'[REALTIME] Speech pending, commiting and waiting for transcription...', flush=True)
                     commit_event = {'type': 'input_audio_buffer.commit'}
                     self.ws.send(json.dumps(commit_event))
+                else:
+                    print(f'[REALTIME] Speech pending, already committed, waiting for transcription...', flush=True)
 
                 # For converse mode, request a response from the model
                 if self.mode == 'converse':
@@ -521,6 +560,7 @@ class RealtimeClient:
                     self.ws.send(json.dumps(response_event))
 
                 # Wait for all pending transcriptions
+                wait_start = time.time()
                 while True:
                     if self.response_event.wait(timeout=timeout):
                         with self.lock:
@@ -529,8 +569,10 @@ class RealtimeClient:
                             # More pending, keep waiting
                             self.response_event.clear()
                     else:
+                        print(f'[REALTIME] TIMEOUT waiting for transcription ({timeout}s)', flush=True)
                         break
 
+                wait_duration = time.time() - wait_start
                 with self.lock:
                     result = self.current_response_text.strip()
                     # Reset state for next recording
@@ -540,12 +582,15 @@ class RealtimeClient:
                     self._speech_in_progress = False
                     self._pending_transcriptions = 0
                     self.audio_buffer_seconds = 0.0
+                print(f'[REALTIME] Got transcription after {wait_duration:.2f}s', flush=True)
                 return result
 
-            # Scenario 3: There are pending transcriptions (VAD committed but transcription not received yet)
+            # Scenario 4: There are pending transcriptions (VAD committed but transcription not received yet)
             # We need to wait for them
             if pending_transcriptions > 0:
-                print(f'[REALTIME] Waiting for {pending_transcriptions} pending transcription(s)', flush=True)
+                print(f'[REALTIME] {pending_transcriptions} pending transcription(s), waiting...', flush=True)
+
+                wait_start = time.time()
                 while True:
                     if self.response_event.wait(timeout=timeout):
                         with self.lock:
@@ -554,8 +599,10 @@ class RealtimeClient:
                             # More pending, keep waiting
                             self.response_event.clear()
                     else:
+                        print(f'[REALTIME] TIMEOUT waiting for pending transcription ({timeout}s)', flush=True)
                         break
 
+                wait_duration = time.time() - wait_start
                 with self.lock:
                     result = self.current_response_text.strip()
                     # Reset state for next recording
@@ -564,37 +611,10 @@ class RealtimeClient:
                     self._buffer_committed = False
                     self._pending_transcriptions = 0
                     self.audio_buffer_seconds = 0.0
+                print(f'[REALTIME] Got transcription after {wait_duration:.2f}s', flush=True)
                 return result
 
-            # Check if there's recent uncommitted audio that VAD didn't detect as speech
-            # This can happen if the user is still speaking but VAD hasn't triggered yet
-            time_since_last_audio = time.time() - self._last_audio_sent_time
-            if time_since_last_audio < 1.0 and not buffer_committed:
-                # Audio was sent recently - force a commit to capture any remaining speech
-                print(f'[REALTIME] Recent uncommitted audio detected, forcing commit', flush=True)
-                commit_event = {'type': 'input_audio_buffer.commit'}
-                self.ws.send(json.dumps(commit_event))
-
-                # Wait for the transcription
-                while True:
-                    if self.response_event.wait(timeout=timeout):
-                        with self.lock:
-                            if self._pending_transcriptions == 0:
-                                break
-                            self.response_event.clear()
-                    else:
-                        break
-
-                with self.lock:
-                    result = self.current_response_text.strip()
-                    self.current_response_text = ""
-                    self.response_complete = False
-                    self._buffer_committed = False
-                    self._pending_transcriptions = 0
-                    self.audio_buffer_seconds = 0.0
-                return result
-
-            # Scenario 4: We have accumulated text and no pending transcriptions
+            # Scenario 5: We have accumulated text and no pending transcriptions
             # All VAD segments have been transcribed, return the accumulated text
             with self.lock:
                 result = self.current_response_text.strip()
@@ -642,4 +662,3 @@ class RealtimeClient:
         self.vad_threshold = threshold
         self.vad_prefix_padding_ms = prefix_padding_ms
         self.vad_silence_duration_ms = silence_duration_ms
-
